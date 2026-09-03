@@ -145,6 +145,13 @@ listen = "0.0.0.0:7391"
 [streamdeck]
 enabled = true                    # only true on the machine it is plugged into
 buttons = ["mac", "avapc", "oldwaterboy"]
+
+[openlogi]
+binary = "/usr/local/bin/openlogi"   # absolute in production; a fixture in tests
+
+[secrets]
+store = "keyring"                 # "file" writes secrets.json next to the config:
+                                  # tests and throwaway machines only
 ```
 
 Validation (`deskswitch config check`): machine names unique; slots unique and within
@@ -227,7 +234,8 @@ it (`type/kebab-description` off master, per the repo's `AGENTS.md`). The existi
 
 ### 6.1 PR 1 — host switch actions (scope `core`, `agent`)
 
-`openlogi-core`, `config/device.rs`:
+`openlogi-core`, new `config/host_switch.rs` (re-exported from `config`), used by
+`config/device.rs`:
 
 ```rust
 /// Actions fired around a keyboard's host switching.
@@ -316,13 +324,13 @@ Agent side:
 `openlogi-cli`, new `host` subcommand:
 
 ```
-openlogi host list [--json]
-openlogi host switch <SLOT> [--keyboard <KEY>]
+openlogi host list [--json] [--device <NAME>]
+openlogi host switch <SLOT> [--device <NAME>]
 ```
 
-`list` prints, per keyboard that reports ChangeHost: config key, name, online, current
-slot, and the slot table. `switch` defaults to the only online keyboard with ChangeHost
-and errors when ambiguous. `list` uses the agent when one is running and otherwise reads
+`list` prints, per online keyboard: name, route, current slot, and the slot table.
+`switch` defaults to the only online keyboard and errors when ambiguous; `--device`
+matches the name case-insensitively, like `openlogi backlight --device`. `list` uses the agent when one is running and otherwise reads
 the devices directly, like `openlogi list`; `switch` requires a running agent, because a
 direct write would race the agent's own divert session. Exit codes: 0 switched or already current,
 2 refused (unpaired or invalid slot), 3 keyboard not found, 4 agent unavailable.
@@ -330,11 +338,13 @@ direct write would race the agent's own divert session. Exit codes: 0 switched o
 `--json` shape, consumed by the desk service:
 
 ```json
-{ "keyboards": [ { "key": "…", "name": "MX Keys S", "online": true,
+{ "keyboards": [ { "name": "MX KEYS S MAC", "route": "direct 046d:b37c", "online": true,
     "current_slot": 1,
-    "slots": [ { "slot": 1, "paired": true, "name": "Michael’s MacBook Pro" }, … ],
-    "targets": ["…"] } ] }
+    "slots": [ { "slot": 1, "paired": true, "name": "Michael’s MacBook Pro" }, … ] } ] }
 ```
+
+An offline keyboard carries `"online": false` and an `"error"` string instead of
+`current_slot` and `slots`.
 
 Docs: `docs/USAGE.md`.
 
@@ -382,8 +392,8 @@ stderr plus a daily-rotated file in the config directory, 7 days kept.
     as if the keyboard were elsewhere. Otherwise switch the monitor directly and, when
     peers are configured, POST `/switch` to all of them concurrently (2 s timeout each,
     failures logged).
-  - Exit codes: 0 done, 1 usage or config error, 2 every backend failed, 3 target not
-    resolvable.
+  - Exit codes: 0 done, 1 usage or config error or the agent refused the switch (unpaired
+    slot), 2 every backend failed, 3 target not resolvable.
 - `arrive`: stop if the last arrive was under 30 s ago; otherwise record the time, sleep
   2.5 s, read, and switch only if the input is not already mine.
 - `status [--json]`: current input from the backends, keyboard holder from `openlogi`,
