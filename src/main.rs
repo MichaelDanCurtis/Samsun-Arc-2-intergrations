@@ -321,7 +321,13 @@ async fn run(cli: cli::Cli, dir: &Path) -> anyhow::Result<u8> {
         cli::Command::Daemon => {
             let config = Config::load(dir)?;
             let secrets = secrets::open_store(config.secrets.store, dir);
-            let lan_secret = secrets.get(secrets::LAN_SECRET)?;
+            // Same rule as `build_deps`: a missing or unreadable secret
+            // disables the LAN listener, it never keeps the daemon from
+            // starting (launchd only restarts a crash, not a clean exit).
+            let lan_secret = match relay_for(config.lan.as_ref(), secrets.as_ref()) {
+                RelayChoice::Http(secret) => Some(secret),
+                RelayChoice::None => None,
+            };
             let deps = Arc::new(build_deps(config, dir)?);
             daemon::run(deps, lan_secret).await?;
             Ok(0)
