@@ -96,11 +96,14 @@ impl TokenManager {
     }
 
     async fn refresh(&self, refresh_token: &str) -> Result<TokenSet, BackendError> {
-        let client_secret = self
+        let Some(client_secret) = self
             .secrets
             .get(SMARTTHINGS_CLIENT_SECRET)
             .map_err(|e| BackendError::Protocol(e.to_string()))?
-            .ok_or(BackendError::Unauthorized)?;
+        else {
+            warn!("no SmartThings client secret stored; run `deskswitch smartthings login`");
+            return Err(BackendError::Unauthorized);
+        };
         let response = self
             .http
             .post(&self.token_url)
@@ -176,7 +179,10 @@ pub fn authorize_url(config: &SmartThingsConfig) -> String {
 #[must_use]
 pub fn code_from_request_line(line: &str) -> Option<String> {
     let target = line.split_whitespace().nth(1)?;
-    let query = target.split_once('?')?.1;
+    let (request_path, query) = target.split_once('?')?;
+    if request_path != "/callback" {
+        return None;
+    }
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(key, _)| key == "code")
         .map(|(_, value)| value.into_owned())
@@ -365,6 +371,26 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn a_missing_client_secret_asks_for_login() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileStore::in_dir(dir.path()));
+        // Tokens are stored (and expired, forcing a refresh) but the client
+        // secret never was: `secrets()` is deliberately not used here.
+        store
+            .set(
+                SMARTTHINGS_TOKENS,
+                &serde_json::to_string(&tokens(0)).unwrap(),
+            )
+            .unwrap();
+        let manager = TokenManager::new(&config(&server, "http://localhost:0/callback"), store);
+        assert!(matches!(
+            manager.bearer().await,
+            Err(BackendError::Unauthorized)
+        ));
+    }
+
     #[test]
     fn authorize_url_and_callback_parsing() {
         let cfg = SmartThingsConfig {
@@ -387,6 +413,7 @@ mod tests {
             Some("abc123")
         );
         assert_eq!(code_from_request_line("GET /favicon.ico HTTP/1.1"), None);
+        assert_eq!(code_from_request_line("GET /other?code=abc HTTP/1.1"), None);
     }
 
     #[tokio::test]
