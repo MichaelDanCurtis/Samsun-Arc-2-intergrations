@@ -25,6 +25,8 @@ pub trait TokenProvider: Send + Sync {
 }
 
 /// A fixed token, for tests and one-off scripts.
+// Only this module's tests construct it.
+#[allow(dead_code)]
 pub struct StaticToken(pub String);
 
 #[async_trait]

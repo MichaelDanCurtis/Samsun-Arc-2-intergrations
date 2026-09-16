@@ -17,6 +17,9 @@ pub enum BackendError {
     #[error("unexpected response: {0}")]
     Protocol(String),
     #[error("{0}")]
+    // No backend constructs this yet; reserved for one that can tell "not
+    // supported" apart from a transient failure.
+    #[allow(dead_code)]
     Unsupported(String),
 }
 
@@ -57,6 +60,8 @@ impl Chain {
         }
     }
 
+    // Only tests call this, to shrink timeouts/retries below their defaults.
+    #[allow(dead_code)]
     #[must_use]
     pub fn with_timing(mut self, op_timeout: Duration, retry_delay: Duration) -> Self {
         self.op_timeout = op_timeout;

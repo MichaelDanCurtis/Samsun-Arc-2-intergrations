@@ -32,6 +32,8 @@ pub trait SecretStore: Send + Sync {
     /// Store a secret with the given key.
     fn set(&self, key: &str, value: &str) -> Result<(), SecretError>;
     /// Delete a secret by key, returning `Ok` even if not found.
+    // Part of the trait contract; no command calls it yet.
+    #[allow(dead_code)]
     fn delete(&self, key: &str) -> Result<(), SecretError>;
 }
 
