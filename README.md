@@ -161,7 +161,10 @@ actually holds the keyboard. Run this on every machine listed with an `address`:
    openssl rand -hex 32                                          # macOS/Linux
    ```
    ```powershell
-   -join ((1..32) | % { '{0:x2}' -f (Get-Random -Max 256) })     # Windows
+   # Windows (Get-Random is not a cryptographic generator; this uses the OS one)
+   $b = New-Object byte[] 32
+   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+   ($b | ForEach-Object { $_.ToString('x2') }) -join ''
    ```
 2. Store it: `deskswitch lan set-secret`, then paste the value at the prompt. Use the
    *same* secret on every machine.
