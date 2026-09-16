@@ -3,7 +3,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "deskswitch", version, about = "Follow the keyboard across machines")]
+#[command(
+    name = "deskswitch",
+    version,
+    about = "Follow the keyboard across machines"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

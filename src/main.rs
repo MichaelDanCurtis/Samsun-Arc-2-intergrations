@@ -19,7 +19,10 @@ fn init_logging(dir: Option<&Path>) -> Option<tracing_appender::non_blocking::Wo
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let stderr = fmt::layer().with_writer(std::io::stderr).with_target(false);
     let Some(dir) = dir else {
-        tracing_subscriber::registry().with(filter).with(stderr).init();
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr)
+            .init();
         return None;
     };
     let file = tracing_appender::rolling::Builder::new()
@@ -40,31 +43,36 @@ fn init_logging(dir: Option<&Path>) -> Option<tracing_appender::non_blocking::Wo
 
 #[tokio::main]
 async fn main() -> ExitCode {
-	let cli = cli::Cli::parse();
-	let config_dir = config::config_dir();
-	let log_dir = config_dir.exists().then_some(config_dir.as_path());
-	let _guard = init_logging(log_dir);
-	match cli.command {
-		cli::Command::Config { action: cli::ConfigAction::Check } => {
-			let dir = config::config_dir();
-			match config::Config::load(&dir) {
-				Ok(config) => {
-					println!("config ok: {}", dir.join(config::FILE_NAME).display());
-					for machine in &config.machines {
-						let me = if machine.name == config.this_machine {
-							" (this machine)"
-						} else {
-							""
-						};
-						println!("  slot {} → {} → {}{me}", machine.slot, machine.name, machine.input);
-					}
-					ExitCode::SUCCESS
-				}
-				Err(error) => {
-					eprintln!("config error: {error}");
-					ExitCode::from(1)
-				}
-			}
-		}
-	}
+    let cli = cli::Cli::parse();
+    let config_dir = config::config_dir();
+    let log_dir = config_dir.exists().then_some(config_dir.as_path());
+    let _guard = init_logging(log_dir);
+    match cli.command {
+        cli::Command::Config {
+            action: cli::ConfigAction::Check,
+        } => {
+            let dir = config::config_dir();
+            match config::Config::load(&dir) {
+                Ok(config) => {
+                    println!("config ok: {}", dir.join(config::FILE_NAME).display());
+                    for machine in &config.machines {
+                        let me = if machine.name == config.this_machine {
+                            " (this machine)"
+                        } else {
+                            ""
+                        };
+                        println!(
+                            "  slot {} → {} → {}{me}",
+                            machine.slot, machine.name, machine.input
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("config error: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+    }
 }

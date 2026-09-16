@@ -82,7 +82,9 @@ mod tests {
     #[test]
     fn toml_round_trip_uses_the_canonical_string() {
         #[derive(serde::Serialize, serde::Deserialize)]
-        struct Row { input: Input }
+        struct Row {
+            input: Input,
+        }
         let row: Row = toml::from_str(r#"input = "hdmi1""#).unwrap();
         assert_eq!(row.input, Input::Hdmi1);
         assert_eq!(toml::to_string(&row).unwrap().trim(), r#"input = "HDMI1""#);
