@@ -1,6 +1,6 @@
 # PR 1 draft — feat/host-switch-actions → AprilNEA/OpenLogi master
 
-Branch: `feat/host-switch-actions` (10 commits on top of upstream `d5e2b880`, v0.8.3).
+Branch: `feat/host-switch-actions` (16 commits on top of upstream `d5e2b880`, v0.8.3; head `a4eea94e`).
 Title: `feat: host switch actions and arrive hook for keyboards`
 
 ---
@@ -11,15 +11,15 @@ Host-switch actions: a keyboard's new `host_switch_actions` table fires a config
 
 ## Changes
 
-- core: `HostSwitchActions` (`slot_1..slot_3`, `arrive`, each an `Option<Action>`; `deny_unknown_fields`; omitted while empty) and `HostSwitchTrigger::{Key, Command, Arrive}` with `hook_env` producing `OPENLOGI_HOST_SLOT` (1-based, absent for arrive), `OPENLOGI_DEVICE_KEY`, `OPENLOGI_TRIGGER`; `DeviceConfig::host_switch_actions` (default + `skip_serializing_if`, raw twin, `From`), so an untouched `config.toml` round-trips unchanged.
+- core: `HostSwitchActions` (`slot_1..slot_3`, `arrive`, each an `Option<Action>`; `deny_unknown_fields`; omitted while empty) and `HostSwitchTrigger::{Key, Command, Arrive}` with `hook_env` producing `OPENLOGI_HOST_SLOT` (1-based, absent for arrive), `OPENLOGI_DEVICE_KEY`, `OPENLOGI_TRIGGER`; `DeviceConfig::host_switch_actions` (default + `skip_serializing_if`, raw twin, `From`), so an untouched `config.toml` round-trips unchanged; the table is folded by `adopt_route` like `host_switch_targets`, so a route-keyed entry keeps its actions when the keyboard's identity becomes readable (tested).
 - inject: `execute_with_env(action, env)`; `execute` delegates with an empty env. Shell (`sh -c` / `cmd /C`), AppleScript, and workflow steps apply the env on all three platforms. `WorkflowStep::RunShellCommand(String)` untouched.
-- hid: `switch_linked_hosts_with(…, on_validated)` — the callback runs exactly once, only when the keyboard's move is required and its slot passed the pairing check, before any device is moved; `switch_linked_hosts` delegates with a no-op. Plus a no-hardware test proving the callback never fires when the keyboard cannot be opened.
+- hid: `switch_linked_hosts_with(…, on_validated)` — the callback runs exactly once, only when the keyboard's move is required and its slot passed the pairing check, before any device is moved. `switch_linked_hosts` stays as a thin delegate (no in-tree caller now, kept so the public surface is unchanged; happy to fold it if you prefer). Plus a no-hardware test proving the callback never fires when the keyboard cannot be opened.
 - agent: `ActionDispatcher::dispatch_hook` (script actions → `execute_with_env`, everything else → `dispatch`); `HostSwitchLink` carries `keyboard_key` + `actions`, and a keyboard with actions but no `host_switch_targets` now gets a divert session; the transition fires the slot action via the validated callback with trigger `key`; `Orchestrator::refresh_inventory` returns `HostArrival`s (offline/absent → online edges observed after the first completed reconcile, never at startup) and the lifecycle dispatches `arrive` after releasing the orchestrator lock.
 - docs: `CONFIGURATION.md` — new "Host switch actions" section and the device-field bullet.
 
 ## Testing
 
-Run on macOS 27 / arm64, rustc 1.98.1, at `1cc0d9cc`:
+Run on macOS 27 / arm64, rustc 1.98.1, at `1cc0d9cc` (workspace gate) and re-run per crate at `a4eea94e` after review fixes (core 277, device 202, agent-core 226, agent 25+1 tests; fmt and clippy clean):
 
 - `cargo fmt --all -- --check` — clean
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
