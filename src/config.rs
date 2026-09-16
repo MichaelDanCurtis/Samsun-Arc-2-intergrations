@@ -241,7 +241,6 @@ impl Config {
 
     /// The machine this process runs on. Valid after [`Self::validate`].
     #[must_use]
-    #[allow(dead_code)]
     pub fn this(&self) -> &Machine {
         self.machine_named(&self.this_machine)
             .unwrap_or(&self.machines[0])
@@ -253,14 +252,12 @@ impl Config {
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub fn machine_for_slot(&self, slot: u8) -> Option<&Machine> {
         self.machines.iter().find(|machine| machine.slot == slot)
     }
 
     /// Other machines that run a daemon we can relay to.
     #[must_use]
-    #[allow(dead_code)]
     pub fn peers(&self) -> Vec<&Machine> {
         self.machines
             .iter()

@@ -5,7 +5,6 @@ use crate::input::Input;
 
 /// What the caller asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Target {
     Slot(u8),
     Machine(String),
@@ -14,14 +13,12 @@ pub enum Target {
 
 /// The input to show, and the machine it belongs to when one is configured.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct Resolved {
     pub input: Input,
     pub machine: Option<Machine>,
 }
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum ResolveError {
     #[error("no machine is configured on slot {0}")]
     UnknownSlot(u8),
@@ -29,7 +26,6 @@ pub enum ResolveError {
     UnknownMachine(String),
 }
 
-#[allow(dead_code)]
 pub fn resolve(config: &Config, target: &Target) -> Result<Resolved, ResolveError> {
     let machine = match target {
         Target::Slot(slot) => config

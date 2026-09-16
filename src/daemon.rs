@@ -23,8 +23,9 @@ pub struct DeckButton {
 #[derive(Debug, Clone, Default)]
 pub struct DeckView {
     pub buttons: Vec<DeckButton>,
-    /// Read by the Stream Deck driver (Task 13) to show a transient error state.
-    #[allow(dead_code)]
+    /// Read by the Stream Deck driver to show a transient error state; only
+    /// read at all when that driver is compiled in.
+    #[cfg_attr(not(feature = "streamdeck"), allow(dead_code))]
     pub error_until: Option<Instant>,
 }
 
