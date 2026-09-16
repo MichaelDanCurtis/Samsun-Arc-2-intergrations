@@ -150,21 +150,56 @@ One-time setup:
 
 5. Verify: `deskswitch config check`
 
+## LAN Relay Setup
+
+Needed only if you use `[lan]` so a switch on one machine relays to whichever machine
+actually holds the keyboard. Run this on every machine listed with an `address`:
+
+1. Generate a secret — 32 random bytes, hex-encoded. Don't pass it as a command-line
+   argument (it would land in your shell history); the next step prompts for it instead.
+   ```bash
+   openssl rand -hex 32                                          # macOS/Linux
+   ```
+   ```powershell
+   -join ((1..32) | % { '{0:x2}' -f (Get-Random -Max 256) })     # Windows
+   ```
+2. Store it: `deskswitch lan set-secret`, then paste the value at the prompt. Use the
+   *same* secret on every machine.
+3. `listen = "0.0.0.0:7391"` binds every network interface, not just your LAN. On a laptop
+   that also joins untrusted Wi-Fi (coffee shops, airports), either bind the LAN-only
+   address instead (e.g. `listen = "192.168.1.50:7391"`) or firewall port 7391 away from
+   those networks.
+4. The relay is plain HTTP: the bearer secret and the switch requests cross the LAN
+   unencrypted. Fine on a trusted home network; don't expose 7391 beyond it.
+
 ## Commands
 
 | Command | Purpose | Exit codes |
 |---------|---------|-----------|
-| `switch --slot N` | Switch to slot N (1–3) or machine. | 0 = done, 1 = config/usage error, 2 = all backends failed, 3 = target not found |
+| `switch --slot N` | Switch to slot N (1–3) or machine. | 0 = done, 1 = config error or agent refused, 2 = usage error (no/ambiguous target) or every backend failed, 3 = target not resolvable |
 | `switch --to <machine>` | Switch to named machine. | (same as above) |
 | `switch --input <X>` | Switch directly to input (HDMI1/2/3, DP). | (same as above) |
-| `arrive` | Fallback: monitor follows keyboard on offline→online. | 0 = done, 1 = config error |
+| `arrive` | Fallback: monitor follows keyboard on offline→online. | 0 = done, rate limited, or already there; 1 = config error; 2 = monitor switch failed |
 | `status [--json]` | Current input, keyboard holder, last switch. | 0 = OK, 1 = config error |
 | `daemon` | LAN listener, Stream Deck, periodic refresh. | Runs indefinitely. |
 | `config check` | Validate config and dry-run all resolutions. | 0 = OK, 1 = config error |
 | `smartthings login` | One-time OAuth setup. | 0 = OK, 1 = error |
 | `smartthings devices` | List available devices. | 0 = OK, 1 = error |
-| `lan set-secret` | Generate and store shared relay secret. | 0 = OK, 1 = error |
+| `lan set-secret` | Store the shared relay secret (prompts for it; see [LAN Relay Setup](#lan-relay-setup)). | 0 = OK, 1 = error |
 
 **Note:** `switch` with no target flag is a usage error (exit 2).
 
 **Note:** `--input <X>` bypasses the machines table only for *which input to show*; an input owned by a configured machine (e.g. `HDMI2` when `avapc` is on it) still behaves exactly like `--to avapc` — the keyboard follows too. An input no machine owns (e.g. `DP`) only moves the monitor and is never relayed to a peer.
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+```
+
+No CI yet (this repo has no remote); these three commands are the gate — run them before
+every commit. `--all-features` is what builds and tests `src/streamdeck.rs` at all (a plain
+`cargo test` never touches it), but seeing it actually drive the hardware — button LEDs
+lighting up, presses registering — needs a Stream Deck Plus plugged in.
