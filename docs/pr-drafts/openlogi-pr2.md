@@ -38,4 +38,12 @@ Hardware (MX Keys S for Mac + MX Master 3S, Bluetooth-direct, macOS):
 
 TO BE FILLED BY MICHAEL: `openlogi host list` shows three slots with the stored host names; `openlogi host switch 2` moves mouse and keyboard, the slot action's `/tmp/hs.txt` shows `OPENLOGI_TRIGGER=command`, exit 0; `openlogi host switch 1` while already on 1 prints "already on slot 1", fires nothing, exit 0; with slot 3 unpaired on the mouse, `openlogi host switch 3` exits 2 and nothing moves.
 
+## Known follow-ups (not in this PR; happy to take any of them as a follow-up or fold them in on request)
+
+- `host_slots`' rustdoc describes `HOST_SLOTS_BUDGET` as the agent's bound, but the handler itself has no timeout beyond the device layer's 5 s write budget plus the shared-lease wait; the constant is honest as a client deadline, the doc overstates the server side.
+- A session task that panics after sending its completion answers a parked command with an `Io` error while the transition still runs; one that panics before sending leaves the command pending. Both are panic-only paths.
+- The `Busy` variant's doc does not name the "watcher channel closed" cause the server maps to it.
+- Two doc strings are slightly stale after the review fixes (`KeyboardReport::current_slot` is also omitted when the device reports no slot; `assemble_name` keeps at most `name_len` bytes, minus trailing NULs).
+- An unknown route in `switch_host` still disarms and re-arms every session before failing `KeyboardNotFound`; the local socket already grants pairing and config authority, so this is not a new trust boundary.
+
 Fixes #N (none — new capability)
