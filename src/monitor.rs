@@ -115,42 +115,27 @@ impl Chain {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
+pub(crate) mod test_support {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
-    use super::*;
+    use async_trait::async_trait;
 
-    struct Fake {
-        name: &'static str,
-        current: Mutex<Option<Input>>,
-        fail: bool,
-        delay: Duration,
-        switches: AtomicUsize,
+    use super::{BackendError, MonitorBackend};
+    use crate::input::Input;
+
+    /// A scripted backend: optional failure, optional delay, a remembered
+    /// input, and a switch counter.
+    pub(crate) struct Fake {
+        pub(crate) name: &'static str,
+        pub(crate) current: Mutex<Option<Input>>,
+        pub(crate) fail: bool,
+        pub(crate) delay: Duration,
+        pub(crate) switches: AtomicUsize,
     }
 
     impl Fake {
-        fn new(name: &'static str) -> Arc<Self> {
-            Arc::new(Self {
-                name,
-                current: Mutex::new(None),
-                fail: false,
-                delay: Duration::ZERO,
-                switches: AtomicUsize::new(0),
-            })
-        }
-        fn failing(name: &'static str) -> Arc<Self> {
-            Arc::new(Self {
-                fail: true,
-                ..Self::plain(name)
-            })
-        }
-        fn slow(name: &'static str, delay: Duration) -> Arc<Self> {
-            Arc::new(Self {
-                delay,
-                ..Self::plain(name)
-            })
-        }
         fn plain(name: &'static str) -> Self {
             Self {
                 name,
@@ -160,7 +145,22 @@ mod tests {
                 switches: AtomicUsize::new(0),
             }
         }
-        fn seen(name: &'static str, input: Input) -> Arc<Self> {
+        pub(crate) fn new(name: &'static str) -> Arc<Self> {
+            Arc::new(Self::plain(name))
+        }
+        pub(crate) fn failing(name: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                fail: true,
+                ..Self::plain(name)
+            })
+        }
+        pub(crate) fn slow(name: &'static str, delay: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                delay,
+                ..Self::plain(name)
+            })
+        }
+        pub(crate) fn seen(name: &'static str, input: Input) -> Arc<Self> {
             let fake = Self::plain(name);
             *fake.current.lock().unwrap() = Some(input);
             Arc::new(fake)
@@ -185,6 +185,14 @@ mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::test_support::Fake;
+    use super::*;
 
     fn chain(backends: Vec<Arc<dyn MonitorBackend>>) -> Chain {
         Chain::new(backends).with_timing(Duration::from_millis(50), Duration::from_millis(10))

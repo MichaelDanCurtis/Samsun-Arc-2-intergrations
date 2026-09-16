@@ -16,6 +16,8 @@ mod secrets;
 mod smartthings;
 #[allow(dead_code)] // Later tasks use this module
 mod state;
+#[allow(dead_code)] // Later tasks use this module
+mod switch;
 
 use std::path::Path;
 use std::process::ExitCode;
