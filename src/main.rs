@@ -5,6 +5,8 @@
 mod cli;
 mod config;
 mod input;
+#[allow(dead_code)] // Later tasks use this module
+mod monitor;
 mod resolve;
 #[allow(dead_code)] // Later tasks use this module
 mod secrets;
