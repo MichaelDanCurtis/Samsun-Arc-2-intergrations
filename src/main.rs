@@ -4,6 +4,7 @@
 
 mod cli;
 mod config;
+mod daemon;
 mod input;
 mod lan;
 mod monitor;
@@ -225,8 +226,12 @@ async fn run(cli: cli::Cli, dir: &Path) -> anyhow::Result<u8> {
             Ok(0)
         }
         cli::Command::Daemon => {
-            eprintln!("daemon: implemented in the next task");
-            Ok(1)
+            let config = Config::load(dir)?;
+            let secrets = secrets::open_store(config.secrets.store, dir);
+            let lan_secret = secrets.get(secrets::LAN_SECRET)?;
+            let deps = Arc::new(build_deps(config, dir)?);
+            daemon::run(deps, lan_secret).await?;
+            Ok(0)
         }
         cli::Command::Smartthings { action } => {
             let config = Config::load(dir)?;

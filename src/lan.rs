@@ -39,8 +39,6 @@ struct SwitchRequest {
     machine: Option<String>,
 }
 
-// Task 12 wires this into `deskswitch daemon`.
-#[allow(dead_code)]
 pub fn router(deps: Arc<Deps>, secret: String) -> Router {
     let shared = Arc::new(Shared { deps, secret });
     Router::new()
@@ -49,8 +47,6 @@ pub fn router(deps: Arc<Deps>, secret: String) -> Router {
         .with_state(shared)
 }
 
-// Task 12 wires this into `deskswitch daemon`.
-#[allow(dead_code)]
 pub async fn serve(listen: &str, router: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
     info!(%listen, "LAN listener up");
