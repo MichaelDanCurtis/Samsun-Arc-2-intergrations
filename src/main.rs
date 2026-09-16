@@ -86,6 +86,45 @@ fn relay_for(lan: Option<&config::LanConfig>, secrets: &dyn secrets::SecretStore
     }
 }
 
+/// `ok` / `NOT FOUND` / `not executable` for the configured `openlogi`
+/// binary. An absolute path is checked directly; a bare name (the default,
+/// `"openlogi"`) is resolved on `PATH`, `which`-style.
+fn openlogi_status(binary: &str) -> &'static str {
+    let path = Path::new(binary);
+    if path.is_absolute() {
+        return file_status(path);
+    }
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return "NOT FOUND";
+    };
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| candidate.is_file())
+        .map_or("NOT FOUND", |candidate| file_status(&candidate))
+}
+
+fn file_status(path: &Path) -> &'static str {
+    if !path.exists() {
+        return "NOT FOUND";
+    }
+    if is_executable(path) {
+        "ok"
+    } else {
+        "not executable"
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
 /// Everything a command needs, built from the config on disk.
 fn build_deps(config: Config, dir: &Path) -> anyhow::Result<Deps> {
     let secrets = secrets::open_store(config.secrets.store, dir);
@@ -148,8 +187,33 @@ async fn run(cli: cli::Cli, dir: &Path) -> anyhow::Result<u8> {
                     machine.slot, machine.name, machine.input
                 );
             }
+
+            let mut ok = true;
+
+            let openlogi = openlogi_status(&config.openlogi.binary);
+            println!("  openlogi: {} ({openlogi})", config.openlogi.binary);
+            if openlogi != "ok" {
+                ok = false;
+            }
+
+            let secrets = secrets::open_store(config.secrets.store, dir);
+            if config.lan.is_some() {
+                match secrets.get(secrets::LAN_SECRET) {
+                    Ok(Some(_)) => println!("  lan secret: stored"),
+                    Ok(None) => {
+                        println!("  lan secret: MISSING (run: deskswitch lan set-secret)");
+                        ok = false;
+                    }
+                    Err(error) => {
+                        println!(
+                            "  lan secret: MISSING (run: deskswitch lan set-secret) [{error}]"
+                        );
+                        ok = false;
+                    }
+                }
+            }
+
             if let Some(st) = &config.monitor.smartthings {
-                let secrets = secrets::open_store(config.secrets.store, dir);
                 let tokens = Arc::new(smartthings::auth::TokenManager::new(st, secrets));
                 let supported = smartthings::SmartThings::new(st, tokens)?
                     .supported_inputs()
@@ -170,7 +234,7 @@ async fn run(cli: cli::Cli, dir: &Path) -> anyhow::Result<u8> {
                 }
                 println!("  SmartThings reports inputs: {}", supported.join(", "));
             }
-            Ok(0)
+            Ok(u8::from(!ok))
         }
         cli::Command::Switch(args) => {
             let deps = build_deps(Config::load(dir)?, dir)?;

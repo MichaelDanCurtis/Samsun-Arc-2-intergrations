@@ -161,3 +161,73 @@ async fn exit_codes_and_config_check() {
         .success()
         .stdout(predicate::str::contains("\"input\":\"HDMI1\""));
 }
+
+#[tokio::test]
+async fn config_check_reports_the_openlogi_binary_as_ok_when_the_fixture_is_present() {
+    let server = MockServer::start().await;
+    ark(&server, "HDMI1").await;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), &server, &["HDMI1", "HDMI2", "HDMI3"]);
+    deskswitch(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "openlogi: {} (ok)",
+            fixture().display()
+        )));
+}
+
+#[tokio::test]
+async fn config_check_fails_and_names_a_missing_openlogi_binary() {
+    let server = MockServer::start().await;
+    ark(&server, "HDMI1").await;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), &server, &["HDMI1", "HDMI2", "HDMI3"]);
+    let config_path = dir.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap().replace(
+        &format!("binary = \"{}\"", fixture().display()),
+        "binary = \"/nonexistent\"",
+    );
+    std::fs::write(&config_path, config).unwrap();
+    deskswitch(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .code(1)
+        .stdout(
+            predicate::str::contains("/nonexistent").and(predicate::str::contains("NOT FOUND")),
+        );
+}
+
+#[tokio::test]
+async fn config_check_reports_a_missing_then_a_stored_lan_secret() {
+    let server = MockServer::start().await;
+    ark(&server, "HDMI1").await;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), &server, &["HDMI1", "HDMI2", "HDMI3"]);
+    let config_path = dir.path().join("config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str("\n[lan]\nlisten = \"0.0.0.0:7391\"\n");
+    std::fs::write(&config_path, &config).unwrap();
+
+    deskswitch(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .code(1)
+        .stdout(
+            predicate::str::contains("lan secret: MISSING")
+                .and(predicate::str::contains("lan set-secret")),
+        );
+
+    let secrets_path = dir.path().join("secrets.json");
+    let mut secrets: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&secrets_path).unwrap()).unwrap();
+    secrets["lan.secret"] = serde_json::Value::String("s3cret".into());
+    std::fs::write(&secrets_path, secrets.to_string()).unwrap();
+
+    deskswitch(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lan secret: stored"));
+}
