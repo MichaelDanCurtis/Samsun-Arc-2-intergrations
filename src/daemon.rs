@@ -91,6 +91,8 @@ pub async fn run(deps: Arc<Deps>, lan_secret: Option<String>) -> anyhow::Result<
     refresh_once(&deps, &view_tx, None).await;
     let mut ticker = tokio::time::interval(REFRESH_EVERY);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `interval` fires at once; the explicit refresh above already covered startup.
+    ticker.tick().await;
     loop {
         #[cfg(feature = "streamdeck")]
         let deck_event = async {
@@ -162,6 +164,31 @@ mod tests {
             "config order"
         );
         assert!(view_for(&config, None, None).buttons.iter().all(|b| !b.lit));
+
+        // SAMPLE lists buttons in the same order as machines, so the above
+        // alone can't tell `buttons` order from `machines` order apart.
+        let mut reordered = config.clone();
+        reordered.streamdeck.buttons = vec!["oldwaterboy".into(), "mac".into()];
+        let view = view_for(&reordered, Some(Input::Hdmi3), None);
+        assert_eq!(
+            view.buttons
+                .iter()
+                .map(|b| (b.machine.as_str(), b.lit))
+                .collect::<Vec<_>>(),
+            [("oldwaterboy", true), ("mac", false)],
+            "buttons order, and avapc absent"
+        );
+
+        reordered.streamdeck.buttons = vec![];
+        let view = view_for(&reordered, None, None);
+        assert_eq!(
+            view.buttons
+                .iter()
+                .map(|b| b.machine.as_str())
+                .collect::<Vec<_>>(),
+            ["mac", "avapc", "oldwaterboy"],
+            "falls back to machines order"
+        );
     }
 
     #[tokio::test]
