@@ -3,7 +3,9 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod cli;
+mod config;
 mod input;
+mod resolve;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -38,12 +40,31 @@ fn init_logging(dir: Option<&Path>) -> Option<tracing_appender::non_blocking::Wo
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = cli::Cli::parse();
-    let _guard = init_logging(None);
-    match cli.command {
-        cli::Command::Config { action: cli::ConfigAction::Check } => {
-            eprintln!("config check: not implemented yet");
-            ExitCode::from(1)
-        }
-    }
+	let cli = cli::Cli::parse();
+	let config_dir = config::config_dir();
+	let log_dir = config_dir.exists().then_some(config_dir.as_path());
+	let _guard = init_logging(log_dir);
+	match cli.command {
+		cli::Command::Config { action: cli::ConfigAction::Check } => {
+			let dir = config::config_dir();
+			match config::Config::load(&dir) {
+				Ok(config) => {
+					println!("config ok: {}", dir.join(config::FILE_NAME).display());
+					for machine in &config.machines {
+						let me = if machine.name == config.this_machine {
+							" (this machine)"
+						} else {
+							""
+						};
+						println!("  slot {} → {} → {}{me}", machine.slot, machine.name, machine.input);
+					}
+					ExitCode::SUCCESS
+				}
+				Err(error) => {
+					eprintln!("config error: {error}");
+					ExitCode::from(1)
+				}
+			}
+		}
+	}
 }
