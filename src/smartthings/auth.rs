@@ -3,11 +3,13 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -19,6 +21,8 @@ use crate::smartthings::TokenProvider;
 const SCOPES: &str = "r:devices:* x:devices:*";
 /// Refresh this long before the access token actually expires.
 const REFRESH_MARGIN_SECS: i64 = 60;
+/// How long `login` waits for the browser to hit the redirect URI.
+const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenSet {
@@ -170,14 +174,16 @@ impl TokenProvider for TokenManager {
     }
 }
 
-/// The browser URL that starts the authorization-code flow.
+/// The browser URL that starts the authorization-code flow, bound to `state`
+/// so the callback that completes it can be verified as the one we started.
 #[must_use]
-pub fn authorize_url(config: &SmartThingsConfig) -> String {
+pub fn authorize_url(config: &SmartThingsConfig, state: &str) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("client_id", &config.client_id)
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", &config.redirect_uri)
         .append_pair("scope", SCOPES)
+        .append_pair("state", state)
         .finish();
     // `form_urlencoded` leaves `*` unescaped (it is unreserved in
     // application/x-www-form-urlencoded); SmartThings' own examples percent-encode it.
@@ -185,18 +191,40 @@ pub fn authorize_url(config: &SmartThingsConfig) -> String {
     format!("{}?{query}", config.authorize_url)
 }
 
-/// `code` from the first line of the redirect request, e.g.
-/// `GET /callback?code=abc&state=x HTTP/1.1`.
+/// `(code, state)` from the first line of the redirect request, e.g.
+/// `GET /callback?code=abc&state=x HTTP/1.1`. `None` when the path isn't
+/// `/callback` or `code` is missing; `state` is `None` when absent.
 #[must_use]
-pub fn code_from_request_line(line: &str) -> Option<String> {
+pub fn callback_params(line: &str) -> Option<(String, Option<String>)> {
     let target = line.split_whitespace().nth(1)?;
     let (request_path, query) = target.split_once('?')?;
     if request_path != "/callback" {
         return None;
     }
-    url::form_urlencoded::parse(query.as_bytes())
-        .find(|(key, _)| key == "code")
-        .map(|(_, value)| value.into_owned())
+    let mut code = None;
+    let mut state = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "code" => code = Some(value.into_owned()),
+            "state" => state = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    Some((code?, state))
+}
+
+/// A random 32-hex-char nonce for the OAuth `state` parameter.
+fn random_state() -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| anyhow::anyhow!("no OS RNG available: {error}"))?;
+    let mut state = String::with_capacity(32);
+    for byte in bytes {
+        // `fmt::Write` for `String` never actually fails.
+        let _ = write!(state, "{byte:02x}");
+    }
+    Ok(state)
 }
 
 /// Run the one-time login: store the client secret, wait for the browser to
@@ -207,36 +235,46 @@ pub async fn login(
     client_secret: &str,
     open_browser: bool,
 ) -> anyhow::Result<TokenSet> {
-    secrets.set(SMARTTHINGS_CLIENT_SECRET, client_secret)?;
-    let redirect = url::Url::parse(&config.redirect_uri)?;
-    let port = redirect
-        .port()
-        .ok_or_else(|| anyhow::anyhow!("redirect_uri needs an explicit port"))?;
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let url = authorize_url(config);
-    if open_browser && let Err(error) = open::that(&url) {
-        warn!(%error, "could not open the browser; open this URL yourself:\n{url}");
-    }
-    println!(
-        "Waiting for SmartThings to redirect to {} …",
-        config.redirect_uri
-    );
-    println!("If the browser did not open, visit:\n{url}");
-    let code = loop {
+    let state = random_state()?;
+    login_with_state(
+        config,
+        secrets,
+        client_secret,
+        open_browser,
+        &state,
+        LOGIN_TIMEOUT,
+    )
+    .await
+}
+
+/// Wait for a callback whose `state` matches `expected`, answering every
+/// other attempt (wrong state, or a code with no state at all) with 400 and
+/// continuing to wait — so a stray page or an attacker's own callback can
+/// never bind this login to a code they chose.
+async fn accept_code(listener: &TcpListener, expected: &str) -> anyhow::Result<String> {
+    loop {
         let (mut stream, _) = listener.accept().await?;
         let mut buffer = vec![0u8; 4096];
         let read = stream.read(&mut buffer).await?;
         let request = String::from_utf8_lossy(&buffer[..read]);
         let line = request.lines().next().unwrap_or_default();
-        match code_from_request_line(line) {
-            Some(code) => {
+        match callback_params(line) {
+            Some((code, Some(state))) if state == expected => {
                 let body = "deskswitch: authorized. You can close this tab.";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 stream.write_all(response.as_bytes()).await?;
-                break code;
+                return Ok(code);
+            }
+            Some(_) => {
+                warn!("rejected an OAuth callback with a missing or mismatched state");
+                stream
+                    .write_all(
+                        b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await?;
             }
             None => {
                 stream
@@ -246,7 +284,39 @@ pub async fn login(
                     .await?;
             }
         }
-    };
+    }
+}
+
+/// [`login`], but with the `state` nonce and accept timeout given explicitly
+/// (so tests can pin the state and shrink the timeout).
+pub async fn login_with_state(
+    config: &SmartThingsConfig,
+    secrets: &dyn SecretStore,
+    client_secret: &str,
+    open_browser: bool,
+    state: &str,
+    timeout: Duration,
+) -> anyhow::Result<TokenSet> {
+    secrets.set(SMARTTHINGS_CLIENT_SECRET, client_secret)?;
+    let redirect = url::Url::parse(&config.redirect_uri)?;
+    let port = redirect
+        .port()
+        .ok_or_else(|| anyhow::anyhow!("redirect_uri needs an explicit port"))?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let url = authorize_url(config, state);
+    if open_browser && let Err(error) = open::that(&url) {
+        warn!(%error, "could not open the browser; open this URL yourself:\n{url}");
+    }
+    println!(
+        "Waiting for SmartThings to redirect to {} …",
+        config.redirect_uri
+    );
+    println!("If the browser did not open, visit:\n{url}");
+    let code = tokio::time::timeout(timeout, accept_code(&listener, state))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("timed out after {timeout:?} waiting for the SmartThings redirect")
+        })??;
     let response = reqwest::Client::new()
         .post(&config.token_url)
         .basic_auth(&config.client_id, Some(client_secret))
@@ -432,23 +502,34 @@ mod tests {
             authorize_url: "https://api.smartthings.com/oauth/authorize".into(),
             redirect_uri: "http://localhost:8765/callback".into(),
         };
-        let url = authorize_url(&cfg);
+        let url = authorize_url(&cfg, "somestate123");
         assert!(url.starts_with("https://api.smartthings.com/oauth/authorize?"));
         assert!(
             url.contains("client_id=client")
                 && url.contains("response_type=code")
                 && url.contains("scope=r%3Adevices%3A%2A+x%3Adevices%3A%2A")
+                && url.contains("state=somestate123")
         );
         assert_eq!(
-            code_from_request_line("GET /callback?code=abc123&state=x HTTP/1.1").as_deref(),
-            Some("abc123")
+            callback_params("GET /callback?code=abc123&state=x HTTP/1.1"),
+            Some(("abc123".to_string(), Some("x".to_string())))
         );
-        assert_eq!(code_from_request_line("GET /favicon.ico HTTP/1.1"), None);
-        assert_eq!(code_from_request_line("GET /other?code=abc HTTP/1.1"), None);
+        assert_eq!(
+            callback_params("GET /callback?code=abc123 HTTP/1.1"),
+            Some(("abc123".to_string(), None)),
+            "a code with no state at all is still parsed; accept_code is what rejects it"
+        );
+        assert_eq!(callback_params("GET /favicon.ico HTTP/1.1"), None);
+        assert_eq!(callback_params("GET /other?code=abc HTTP/1.1"), None);
+        assert_eq!(
+            callback_params("GET /callback?state=x HTTP/1.1"),
+            None,
+            "code is required"
+        );
     }
 
     #[tokio::test]
-    async fn login_exchanges_the_code_it_receives_on_the_redirect_port() {
+    async fn login_with_state_rejects_a_state_mismatch_then_exchanges_the_matching_code() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
@@ -471,10 +552,31 @@ mod tests {
         let login = tokio::spawn(async move {
             // `open_browser = false`: the test plays the browser.
             let store = FileStore::in_dir(&path);
-            login(&cfg, &store, "shh", false).await
+            login_with_state(
+                &cfg,
+                &store,
+                "shh",
+                false,
+                "teststate",
+                Duration::from_secs(10),
+            )
+            .await
         });
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let body = reqwest::get(format!("{redirect}?code=abc"))
+
+        // An attacker's (or a stray tab's) callback with the wrong state is
+        // rejected, and the login keeps waiting for the real one.
+        let status = reqwest::get(format!("{redirect}?code=evil&state=wrong"))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status.as_u16(), 400);
+        assert!(
+            !login.is_finished(),
+            "a state mismatch must not end the login"
+        );
+
+        let body = reqwest::get(format!("{redirect}?code=abc&state=teststate"))
             .await
             .unwrap()
             .text()
@@ -487,5 +589,28 @@ mod tests {
             .get(SMARTTHINGS_TOKENS)
             .unwrap();
         assert!(stored.is_some(), "tokens were persisted");
+    }
+
+    #[tokio::test]
+    async fn login_with_state_times_out_when_nothing_ever_calls_back() {
+        let server = MockServer::start().await;
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let redirect = format!("http://localhost:{port}/callback");
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileStore::in_dir(dir.path());
+        let cfg = config(&server, &redirect);
+        let result = login_with_state(
+            &cfg,
+            &store,
+            "shh",
+            false,
+            "teststate",
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(result.is_err());
     }
 }
