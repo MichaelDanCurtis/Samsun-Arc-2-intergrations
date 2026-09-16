@@ -8,12 +8,36 @@ See [`docs/superpowers/specs/2026-09-02-ark-desk-switch-design.md`](docs/superpo
 
 ### macOS
 
-```bash
-cargo build --release --features streamdeck
-sudo cp target/release/deskswitch /usr/local/bin/deskswitch
-cp deploy/com.deskswitch.daemon.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.deskswitch.daemon.plist
-```
+Install the daemon only after the config and both secrets exist — bootstrapping it first
+means `launchctl` starts (and, without the `Crashed`-only `KeepAlive` below, would keep
+respawning) a daemon that has nothing to work with yet.
+
+1. Quit the Elgato Stream Deck app. It holds the device exclusively, so `deskswitch daemon`
+   cannot open it while Elgato's app is running.
+2. Build and install the binary:
+   ```bash
+   cargo build --release --features streamdeck
+   sudo cp target/release/deskswitch /usr/local/bin/deskswitch
+   ```
+3. Write `~/.config/deskswitch/config.toml` (see [Configuration](#configuration)), then
+   validate it:
+   ```bash
+   deskswitch config check
+   ```
+4. Log in to SmartThings and store the LAN secret (see [SmartThings Setup](#smartthings-setup)):
+   ```bash
+   deskswitch smartthings login --client-id <ID> --client-secret <secret>
+   deskswitch lan set-secret
+   ```
+5. Only once `config check` passes and both secrets are stored, install the daemon:
+   ```bash
+   cp deploy/com.deskswitch.daemon.plist ~/Library/LaunchAgents/
+   # launchd does not expand "~"; point the log paths at your actual home directory first.
+   sed -i '' "s#~/Library/Logs#$HOME/Library/Logs#g" ~/Library/LaunchAgents/com.deskswitch.daemon.plist
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.deskswitch.daemon.plist
+   ```
+   The plist's `KeepAlive` only restarts the daemon when it crashes — a config error makes
+   it exit cleanly instead of being respawned every few seconds.
 
 ### Windows
 
