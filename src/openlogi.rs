@@ -16,7 +16,7 @@ pub enum Probe {
     Unavailable(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SwitchResult {
     Switched,
     AlreadyCurrent,

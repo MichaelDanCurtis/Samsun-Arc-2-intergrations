@@ -254,6 +254,10 @@ mod tests {
         probe: Mutex<Option<Probe>>, // None = Unavailable
         switches: Mutex<Vec<u8>>,
         refuse: Option<u8>,
+        /// Overrides what `switch()` returns, e.g. to simulate the keyboard
+        /// vanishing or the agent going unavailable between the probe and
+        /// the switch (§4.3's `NotFound`/`Unavailable` arms).
+        switch_result: Option<SwitchResult>,
     }
 
     impl FakeAgent {
@@ -265,6 +269,7 @@ mod tests {
                 })),
                 switches: Mutex::new(vec![]),
                 refuse: None,
+                switch_result: None,
             })
         }
         fn away() -> Arc<Self> {
@@ -272,6 +277,7 @@ mod tests {
                 probe: Mutex::new(Some(Probe::Elsewhere)),
                 switches: Mutex::new(vec![]),
                 refuse: None,
+                switch_result: None,
             })
         }
         fn down() -> Arc<Self> {
@@ -279,6 +285,7 @@ mod tests {
                 probe: Mutex::new(None),
                 switches: Mutex::new(vec![]),
                 refuse: None,
+                switch_result: None,
             })
         }
         fn here_refusing(slot: u8, refuse: u8) -> Arc<Self> {
@@ -289,6 +296,20 @@ mod tests {
                 })),
                 switches: Mutex::new(vec![]),
                 refuse: Some(refuse),
+                switch_result: None,
+            })
+        }
+        /// Probes `Here` on `slot`, but `switch()` returns the scripted
+        /// `result` regardless of the requested target slot.
+        fn here_losing_the_keyboard_on_switch(slot: u8, result: SwitchResult) -> Arc<Self> {
+            Arc::new(Self {
+                probe: Mutex::new(Some(Probe::Here {
+                    current_slot: slot,
+                    name: "K".into(),
+                })),
+                switches: Mutex::new(vec![]),
+                refuse: None,
+                switch_result: Some(result),
             })
         }
     }
@@ -308,6 +329,9 @@ mod tests {
         }
         async fn switch(&self, slot: u8) -> SwitchResult {
             self.switches.lock().unwrap().push(slot);
+            if let Some(result) = &self.switch_result {
+                return result.clone();
+            }
             if self.refuse == Some(slot) {
                 return SwitchResult::Refused("unpaired".into());
             }
@@ -423,6 +447,70 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, SwitchError::AgentRefused(_)));
         assert_eq!(error.exit_code(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_loses_the_keyboard_after_the_probe_falls_back_to_monitor_and_relay() {
+        let agent = FakeAgent::here_losing_the_keyboard_on_switch(1, SwitchResult::NotFound);
+        let backend = Fake::new("st");
+        let r = relay();
+        let (_d, deps) = deps(agent.clone(), backend.clone(), r.clone());
+        let outcome = run_switch(&deps, &Target::Slot(2), Mode::User)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Monitor { ref relayed, .. } if relayed.len() == 1));
+        assert_eq!(*agent.switches.lock().unwrap(), vec![2]);
+        assert_eq!(*r.0.lock().unwrap(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_goes_unavailable_after_the_probe_falls_back_to_monitor_and_relay() {
+        let agent = FakeAgent::here_losing_the_keyboard_on_switch(
+            1,
+            SwitchResult::Unavailable("gone".into()),
+        );
+        let backend = Fake::new("st");
+        let r = relay();
+        let (_d, deps) = deps(agent.clone(), backend.clone(), r.clone());
+        let outcome = run_switch(&deps, &Target::Slot(2), Mode::User)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Monitor { ref relayed, .. } if relayed.len() == 1));
+        assert_eq!(*agent.switches.lock().unwrap(), vec![2]);
+        assert_eq!(*r.0.lock().unwrap(), vec![2]);
+    }
+
+    /// §4.2: `--input <X>` "bypasses the table" for input resolution, but not
+    /// for the switch/relay decision — an input a machine owns is exactly a
+    /// `--to` for that machine; an unowned input (e.g. `DP`) only ever moves
+    /// the monitor.
+    #[tokio::test]
+    async fn an_input_owned_by_a_machine_behaves_exactly_like_to_that_machine() {
+        let agent = FakeAgent::here(1);
+        let backend = Fake::new("st");
+        let (_d, deps) = deps(agent.clone(), backend.clone(), relay());
+        // avapc (SAMPLE) is slot 3 and owns HDMI2.
+        let outcome = run_switch(&deps, &Target::Input(Input::Hdmi2), Mode::User)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Delegated));
+        assert_eq!(*agent.switches.lock().unwrap(), vec![3]);
+    }
+
+    #[tokio::test]
+    async fn an_unowned_input_only_moves_the_monitor_and_is_never_relayed() {
+        let agent = FakeAgent::away();
+        let backend = Fake::new("st");
+        let r = relay();
+        let (_d, deps) = deps(agent.clone(), backend.clone(), r.clone());
+        let outcome = run_switch(&deps, &Target::Input(Input::Dp), Mode::User)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Monitor { ref relayed, .. } if relayed.is_empty()));
+        assert!(
+            r.0.lock().unwrap().is_empty(),
+            "DP belongs to no machine, so there's nothing to relay to"
+        );
     }
 
     #[tokio::test]

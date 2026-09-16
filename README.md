@@ -142,3 +142,5 @@ One-time setup:
 | `lan set-secret` | Generate and store shared relay secret. | 0 = OK, 1 = error |
 
 **Note:** `switch` with no target flag is a usage error (exit 2).
+
+**Note:** `--input <X>` bypasses the machines table only for *which input to show*; an input owned by a configured machine (e.g. `HDMI2` when `avapc` is on it) still behaves exactly like `--to avapc` — the keyboard follows too. An input no machine owns (e.g. `DP`) only moves the monitor and is never relayed to a peer.
