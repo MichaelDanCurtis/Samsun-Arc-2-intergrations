@@ -6,13 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
 #[cfg(test)]
@@ -61,7 +62,8 @@ fn authorized(shared: &Shared, headers: &HeaderMap) -> bool {
         .is_some_and(|token| token == shared.secret)
 }
 
-fn unauthorized() -> Response {
+fn unauthorized(method: &Method, uri: &Uri) -> Response {
+    warn!(%method, path = %uri.path(), "rejected LAN request without a valid bearer");
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({"error": "unauthorized"})),
@@ -71,12 +73,24 @@ fn unauthorized() -> Response {
 
 async fn switch_handler(
     State(shared): State<Arc<Shared>>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
-    Json(request): Json<SwitchRequest>,
+    body: Bytes,
 ) -> Response {
     if !authorized(&shared, &headers) {
-        return unauthorized();
+        return unauthorized(&method, &uri);
     }
+    let request: SwitchRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("invalid body: {error}")})),
+            )
+                .into_response();
+        }
+    };
     let target = match (request.slot, request.machine) {
         (Some(slot), _) => Target::Slot(slot),
         (None, Some(machine)) => Target::Machine(machine),
@@ -127,9 +141,14 @@ async fn switch_handler(
     Json(body).into_response()
 }
 
-async fn status_handler(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+async fn status_handler(
+    State(shared): State<Arc<Shared>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
     if !authorized(&shared, &headers) {
-        return unauthorized();
+        return unauthorized(&method, &uri);
     }
     Json(status(&shared.deps).await).into_response()
 }
@@ -244,6 +263,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn auth_is_checked_before_the_body_is_parsed() {
+        let (base, _d) = serve_test(true).await;
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{base}/switch"))
+            .body("not json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401);
+        let response = client
+            .post(format!("{base}/switch"))
+            .bearer_auth("s3cret")
+            .body("not json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
     }
 
     #[tokio::test]
