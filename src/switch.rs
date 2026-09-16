@@ -198,10 +198,12 @@ pub async fn run_arrive(deps: &Deps, timing: ArriveTiming) -> ArriveOutcome {
     }
     match deps.chain.switch(mine).await {
         Ok(_) => {
-            let _ = deps.state.update(|state| {
+            if let Err(error) = deps.state.update(|state| {
                 state.last_known_input = Some(mine);
                 state.last_switch_at = Some(Utc::now());
-            });
+            }) {
+                warn!(%error, "could not write state.json");
+            }
             ArriveOutcome::Switched
         }
         Err(error) => ArriveOutcome::Failed(error),
@@ -220,8 +222,10 @@ pub struct StatusReport {
 
 pub async fn status(deps: &Deps) -> StatusReport {
     let input = deps.chain.current().await;
-    if input.is_some() {
-        let _ = deps.state.update(|state| state.last_known_input = input);
+    if input.is_some()
+        && let Err(error) = deps.state.update(|state| state.last_known_input = input)
+    {
+        warn!(%error, "could not write state.json");
     }
     let (keyboard_here, current_slot) = match deps.agent.probe().await {
         Probe::Here { current_slot, .. } => (true, Some(current_slot)),

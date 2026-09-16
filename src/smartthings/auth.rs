@@ -2,13 +2,14 @@
 //! refresh with the stored refresh token (rotated on every refresh).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::SmartThingsConfig;
 use crate::monitor::BackendError;
@@ -60,6 +61,11 @@ pub struct TokenManager {
     secrets: Arc<dyn SecretStore>,
     http: reqwest::Client,
     cached: Mutex<Option<TokenSet>>,
+    /// Set once the "no tokens stored" warning has fired, so a daemon
+    /// polling every 30s logs the login hint once per process instead of on
+    /// every tick; the store is still re-read every time so a later login is
+    /// noticed.
+    missing_reported: AtomicBool,
 }
 
 impl TokenManager {
@@ -71,6 +77,7 @@ impl TokenManager {
             secrets,
             http: reqwest::Client::new(),
             cached: Mutex::new(None),
+            missing_reported: AtomicBool::new(false),
         }
     }
 
@@ -139,7 +146,11 @@ impl TokenProvider for TokenManager {
             *cached = self.load()?;
         }
         let Some(tokens) = cached.as_ref() else {
-            warn!("no SmartThings tokens stored; run `deskswitch smartthings login`");
+            if self.missing_reported.swap(true, Ordering::Relaxed) {
+                debug!("no SmartThings tokens stored; run `deskswitch smartthings login`");
+            } else {
+                warn!("no SmartThings tokens stored; run `deskswitch smartthings login`");
+            }
             return Err(BackendError::Unauthorized);
         };
         if tokens.fresh() {
@@ -365,6 +376,26 @@ mod tests {
                 &serde_json::to_string(&tokens(0)).unwrap(),
             )
             .unwrap();
+        assert!(matches!(
+            manager.bearer().await,
+            Err(BackendError::Unauthorized)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_missing_tokens_warning_fires_once_but_the_store_keeps_being_read() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileStore::in_dir(dir.path()));
+        let manager = TokenManager::new(&config(&server, "http://localhost:0/callback"), store);
+        assert!(!manager.missing_reported.load(Ordering::Relaxed));
+        assert!(matches!(
+            manager.bearer().await,
+            Err(BackendError::Unauthorized)
+        ));
+        assert!(manager.missing_reported.load(Ordering::Relaxed));
+        // A second call still re-reads the store (not just the cached "missing"
+        // state), so a login recorded between calls would be noticed.
         assert!(matches!(
             manager.bearer().await,
             Err(BackendError::Unauthorized)
