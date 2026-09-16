@@ -27,12 +27,22 @@ pub struct DeckView {
     /// read at all when that driver is compiled in.
     #[cfg_attr(not(feature = "streamdeck"), allow(dead_code))]
     pub error_until: Option<Instant>,
+    /// The key index the error belongs to — the one that was pressed, which
+    /// need not be the lit one (a switch away from the current input fails
+    /// on the key the user pressed, not on the key still showing lit).
+    #[cfg_attr(not(feature = "streamdeck"), allow(dead_code))]
+    pub error_key: Option<usize>,
 }
 
 /// One button per `[streamdeck].buttons` entry (or every machine when that
-/// list is empty), lit when the machine owns the current input.
+/// list is empty), lit when the machine owns the current input. `error` is
+/// `(pressed key index, flash until)`.
 #[must_use]
-pub fn view_for(config: &Config, input: Option<Input>, error_until: Option<Instant>) -> DeckView {
+pub fn view_for(
+    config: &Config,
+    input: Option<Input>,
+    error: Option<(usize, Instant)>,
+) -> DeckView {
     let names: Vec<&str> = if config.streamdeck.buttons.is_empty() {
         config.machines.iter().map(|m| m.name.as_str()).collect()
     } else {
@@ -51,19 +61,24 @@ pub fn view_for(config: &Config, input: Option<Input>, error_until: Option<Insta
             lit: input == Some(machine.input),
         })
         .collect();
+    let (error_key, error_until) = match error {
+        Some((key, until)) => (Some(key), Some(until)),
+        None => (None, None),
+    };
     DeckView {
         buttons,
         error_until,
+        error_key,
     }
 }
 
 pub async fn refresh_once(
     deps: &Deps,
     view: &watch::Sender<DeckView>,
-    error_until: Option<Instant>,
+    error: Option<(usize, Instant)>,
 ) {
     let report = status(deps).await;
-    let _ = view.send(view_for(&deps.config, report.input, error_until));
+    let _ = view.send(view_for(&deps.config, report.input, error));
 }
 
 pub async fn run(deps: Arc<Deps>, lan_secret: Option<String>) -> anyhow::Result<()> {
@@ -110,14 +125,14 @@ pub async fn run(deps: Arc<Deps>, lan_secret: Option<String>) -> anyhow::Result<
                 let machine = view_rx.borrow().buttons.get(index).map(|b| b.machine.clone());
                 let Some(machine) = machine else { continue };
                 let target = crate::resolve::Target::Machine(machine.clone());
-                let error_until = match crate::switch::run_switch(&deps, &target, crate::switch::Mode::User).await {
+                let error = match crate::switch::run_switch(&deps, &target, crate::switch::Mode::User).await {
                     Ok(_) => None,
                     Err(error) => {
                         warn!(%machine, %error, "deck switch failed");
-                        Some(Instant::now() + Duration::from_secs(1))
+                        Some((index, Instant::now() + Duration::from_secs(1)))
                     }
                 };
-                refresh_once(&deps, &view_tx, error_until).await;
+                refresh_once(&deps, &view_tx, error).await;
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("daemon stopping");
@@ -189,6 +204,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["mac", "avapc", "oldwaterboy"],
             "falls back to machines order"
+        );
+    }
+
+    #[test]
+    fn the_error_lands_on_the_pressed_key_not_the_lit_one() {
+        let config: Config = toml::from_str(crate::config::tests::SAMPLE).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(1);
+        // The current input (HDMI2) lights "avapc" (index 1), but the key
+        // that was pressed and whose switch failed is "mac" (index 0).
+        let view = view_for(&config, Some(Input::Hdmi2), Some((0, until)));
+        assert_eq!(view.error_key, Some(0));
+        assert_eq!(view.error_until, Some(until));
+        assert_eq!(
+            view.buttons
+                .iter()
+                .filter(|b| b.lit)
+                .map(|b| b.machine.as_str())
+                .collect::<Vec<_>>(),
+            ["avapc"],
+            "the lit button is unrelated to which key errored"
+        );
+        assert!(
+            view_for(&config, Some(Input::Hdmi2), None)
+                .error_key
+                .is_none()
         );
     }
 

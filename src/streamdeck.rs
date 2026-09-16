@@ -178,13 +178,17 @@ fn deck_loop(
         // Drain every pending view and paint only the last one: intermediate
         // views are stale the instant a newer one is queued behind them.
         while let Ok(view) = repaint.try_recv() {
-            let error = view
+            let error_active = view
                 .error_until
                 .is_some_and(|until| until > std::time::Instant::now());
             for key in 0..key_count {
                 let image = match view.buttons.get(key) {
                     Some(button) => {
-                        render(&button.machine, button.lit, error && button.lit, size, font)
+                        // Flash the key that was pressed, not the one still
+                        // showing lit — a switch away from the current input
+                        // fails on the pressed key, which is never the lit one.
+                        let error = error_active && view.error_key == Some(key);
+                        render(&button.machine, button.lit, error, size, font)
                     }
                     None => render("", false, false, size, font),
                 };
