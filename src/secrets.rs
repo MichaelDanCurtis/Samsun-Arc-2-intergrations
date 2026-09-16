@@ -60,24 +60,21 @@ impl FileStore {
         }
     }
 
+    /// Write `map` via a sibling temp file and rename. The temp name carries
+    /// this process's pid so a concurrent writer never clobbers another
+    /// writer's in-flight temp file, and the file is created owner-only from
+    /// the first byte rather than world-readable then chmod'd.
     fn write(&self, map: &BTreeMap<String, String>) -> Result<(), SecretError> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let temp = self.path.with_extension("json.tmp");
-        if let Err(error) = std::fs::write(&temp, serde_json::to_vec_pretty(map)?) {
+        let temp = self
+            .path
+            .with_extension(format!("json.{}.tmp", std::process::id()));
+        let bytes = serde_json::to_vec_pretty(map)?;
+        if let Err(error) = write_owner_only(&temp, &bytes) {
             let _ = std::fs::remove_file(&temp);
             return Err(error.into());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            if let Err(error) =
-                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
-            {
-                let _ = std::fs::remove_file(&temp);
-                return Err(error.into());
-            }
         }
         if let Err(error) = std::fs::rename(&temp, &self.path) {
             let _ = std::fs::remove_file(&temp);
@@ -85,6 +82,26 @@ impl FileStore {
         }
         Ok(())
     }
+}
+
+/// Create `path` fresh (failing if it already exists) with owner-only
+/// permissions from the moment it's created, and write `bytes` to it.
+#[cfg(unix)]
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
 }
 
 impl SecretStore for FileStore {
@@ -207,6 +224,30 @@ mod tests {
         fs::create_dir(dir.path().join("secrets.json")).unwrap();
         let result = store.set("a", "1");
         assert!(result.is_err());
-        assert!(!dir.path().join("secrets.json.tmp").exists());
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
+        assert_eq!(leftovers, Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_temp_file_is_owner_only_from_creation() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        write_owner_only(&dir.path().join("probe.tmp"), b"{}").unwrap();
+        let mode = std::fs::metadata(dir.path().join("probe.tmp"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

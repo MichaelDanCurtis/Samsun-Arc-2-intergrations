@@ -55,12 +55,16 @@ impl StateStore {
     }
 
     /// Write `state` via a sibling temp file and rename, so a crash mid-write
-    /// never leaves a torn file.
+    /// never leaves a torn file. The temp name carries this process's pid so
+    /// a concurrent writer (the daemon refreshing while a hook switches)
+    /// never clobbers another writer's in-flight temp file.
     pub fn save(&self, state: &State) -> std::io::Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let temp = self.path.with_extension("json.tmp");
+        let temp = self
+            .path
+            .with_extension(format!("json.{}.tmp", std::process::id()));
         if let Err(error) = std::fs::write(&temp, serde_json::to_vec_pretty(state)?) {
             let _ = std::fs::remove_file(&temp);
             return Err(error);
@@ -123,7 +127,17 @@ mod tests {
         fs::create_dir(dir.path().join("state.json")).unwrap();
         let result = store.save(&State::default());
         assert!(result.is_err());
-        assert!(!dir.path().join("state.json.tmp").exists());
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
+        assert_eq!(leftovers, Vec::<String>::new());
     }
 
     #[test]
