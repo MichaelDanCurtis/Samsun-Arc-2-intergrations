@@ -6,6 +6,8 @@ mod cli;
 mod config;
 mod input;
 mod resolve;
+#[allow(dead_code)] // Later tasks use this module
+mod state;
 
 use std::path::Path;
 use std::process::ExitCode;
