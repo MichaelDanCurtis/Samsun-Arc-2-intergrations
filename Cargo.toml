@@ -31,6 +31,7 @@ elgato-streamdeck = { version = "0.13", optional = true }
 image = { version = "0.25", optional = true }
 imageproc = { version = "0.25", optional = true }
 ab_glyph = { version = "0.2", optional = true }
+futures = "0.3"
 
 [dev-dependencies]
 assert_cmd = "2"

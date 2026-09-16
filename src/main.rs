@@ -6,6 +6,8 @@ mod cli;
 mod config;
 mod input;
 #[allow(dead_code)] // Later tasks use this module
+mod lan;
+#[allow(dead_code)] // Later tasks use this module
 mod monitor;
 #[allow(dead_code)] // Later tasks use this module
 mod openlogi;

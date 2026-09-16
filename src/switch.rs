@@ -48,7 +48,9 @@ impl Relay for NoRelay {
 pub enum Mode {
     /// Invoked by an `OpenLogi` hook: monitor only.
     Hook,
-    /// Invoked by a person, the Stream Deck, or a peer.
+    /// Invoked by a person or the Stream Deck. A relayed peer request never
+    /// goes through `run_switch`; the LAN handler answers it directly so
+    /// requests cannot ping-pong (see `lan.rs`).
     User,
 }
 
