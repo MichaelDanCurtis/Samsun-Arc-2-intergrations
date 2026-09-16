@@ -161,13 +161,17 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
     }
 
+    // keyring's mock stores credentials per Entry instance, so a set/get round-trip cannot
+    // be observed through `KeyringStore` (which builds a fresh Entry per call); the round-trip
+    // contract is covered by the FileStore tests and by the real keychain at runtime.
     #[test]
-    fn keyring_store_uses_the_mock_backend_in_tests() {
+    fn keyring_store_maps_a_missing_entry_to_none_and_delete_to_ok() {
         keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let store = KeyringStore;
-        store.set("t", "v").unwrap();
-        assert_eq!(store.get("t").unwrap().as_deref(), Some("v"));
-        store.delete("t").unwrap();
-        assert_eq!(store.get("t").unwrap(), None);
+        // A fresh Entry in the mock's get_password() returns Error::NoEntry,
+        // which KeyringStore.get() should map to Ok(None).
+        assert_eq!(store.get("never-set").unwrap(), None);
+        // KeyringStore.delete() should map Error::NoEntry to Ok(()).
+        assert_eq!(store.delete("never-set").unwrap(), ());
     }
 }
