@@ -111,6 +111,11 @@ pub struct StreamDeckConfig {
     pub enabled: bool,
     #[serde(default)]
     pub buttons: Vec<String>,
+    /// Path to a `.ttf`/`.otf` used to draw key labels. When unset, the
+    /// driver falls back to a per-OS system font and, failing that, draws
+    /// keys without text.
+    #[serde(default)]
+    pub font: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

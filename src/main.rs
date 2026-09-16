@@ -13,6 +13,8 @@ mod resolve;
 mod secrets;
 mod smartthings;
 mod state;
+#[cfg(feature = "streamdeck")]
+mod streamdeck;
 mod switch;
 
 use std::io::{BufRead as _, Write as _};

@@ -84,7 +84,7 @@ pub async fn run(deps: Arc<Deps>, lan_secret: Option<String>) -> anyhow::Result<
     }
     #[cfg(feature = "streamdeck")]
     let mut deck_events = if deps.config.streamdeck.enabled {
-        crate::streamdeck::spawn(view_rx.clone())
+        crate::streamdeck::spawn(view_rx.clone(), deps.config.streamdeck.font.clone())
     } else {
         None
     };
