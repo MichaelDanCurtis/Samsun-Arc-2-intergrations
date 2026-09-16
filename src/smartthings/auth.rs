@@ -305,7 +305,9 @@ pub async fn login_with_state(
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let url = authorize_url(config, state);
     if open_browser && let Err(error) = open::that(&url) {
-        warn!(%error, "could not open the browser; open this URL yourself:\n{url}");
+        // The URL carries the state nonce; keep it off the log and let the
+        // `println!` below hand it to the user.
+        warn!(%error, "could not open the browser; open the URL printed below yourself");
     }
     println!(
         "Waiting for SmartThings to redirect to {} …",
