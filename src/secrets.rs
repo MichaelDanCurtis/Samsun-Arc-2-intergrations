@@ -7,8 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::SecretStoreKind;
 
+/// Secret key for `SmartThings` client secret.
 pub const SMARTTHINGS_CLIENT_SECRET: &str = "smartthings.client_secret";
+/// Secret key for `SmartThings` tokens.
 pub const SMARTTHINGS_TOKENS: &str = "smartthings.tokens";
+/// Secret key for LAN secret.
 pub const LAN_SECRET: &str = "lan.secret";
 
 const SERVICE: &str = "deskswitch";
@@ -24,8 +27,11 @@ pub enum SecretError {
 }
 
 pub trait SecretStore: Send + Sync {
+    /// Retrieve a secret by key, returning `None` if not found.
     fn get(&self, key: &str) -> Result<Option<String>, SecretError>;
+    /// Store a secret with the given key.
     fn set(&self, key: &str, value: &str) -> Result<(), SecretError>;
+    /// Delete a secret by key, returning `Ok` even if not found.
     fn delete(&self, key: &str) -> Result<(), SecretError>;
 }
 
@@ -57,13 +63,24 @@ impl FileStore {
             std::fs::create_dir_all(dir)?;
         }
         let temp = self.path.with_extension("json.tmp");
-        std::fs::write(&temp, serde_json::to_vec_pretty(map)?)?;
+        if let Err(error) = std::fs::write(&temp, serde_json::to_vec_pretty(map)?) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error.into());
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+            if let Err(error) =
+                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+            {
+                let _ = std::fs::remove_file(&temp);
+                return Err(error.into());
+            }
         }
-        std::fs::rename(&temp, &self.path)?;
+        if let Err(error) = std::fs::rename(&temp, &self.path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error.into());
+        }
         Ok(())
     }
 }
@@ -122,6 +139,7 @@ impl SecretStore for KeyringStore {
     }
 }
 
+/// Open a secret store of the specified kind.
 #[must_use]
 pub fn open_store(kind: SecretStoreKind, dir: &Path) -> Arc<dyn SecretStore> {
     match kind {
@@ -168,10 +186,25 @@ mod tests {
     fn keyring_store_maps_a_missing_entry_to_none_and_delete_to_ok() {
         keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let store = KeyringStore;
+        // Smoke check: set does not error against the mock.
+        store.set("k", "v").unwrap();
         // A fresh Entry in the mock's get_password() returns Error::NoEntry,
         // which KeyringStore.get() should map to Ok(None).
         assert_eq!(store.get("never-set").unwrap(), None);
         // KeyringStore.delete() should map Error::NoEntry to Ok(()).
         assert_eq!(store.delete("never-set").unwrap(), ());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_rename_leaves_no_temp_file() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileStore::in_dir(dir.path());
+        fs::create_dir(dir.path().join("secrets.json")).unwrap();
+        let result = store.set("a", "1");
+        assert!(result.is_err());
+        assert!(!dir.path().join("secrets.json.tmp").exists());
     }
 }
