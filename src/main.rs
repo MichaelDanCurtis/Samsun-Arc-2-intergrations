@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use clap::Parser as _;
+use tracing::warn;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use crate::config::Config;
@@ -59,6 +60,32 @@ fn init_logging(dir: Option<&Path>) -> Option<tracing_appender::non_blocking::Wo
     Some(guard)
 }
 
+/// What relay `build_deps` should construct: `Http` only when `[lan]` is
+/// configured and a secret is actually stored for it.
+#[derive(Debug, PartialEq, Eq)]
+enum RelayChoice {
+    Http(String),
+    None,
+}
+
+/// Decide the relay for a switch. Never touches the secret store when there
+/// is no `[lan]` section, and never lets a keychain error — or a `[lan]`
+/// section with no secret stored yet — block the switch: either just
+/// disables relaying.
+fn relay_for(lan: Option<&config::LanConfig>, secrets: &dyn secrets::SecretStore) -> RelayChoice {
+    if lan.is_none() {
+        return RelayChoice::None;
+    }
+    match secrets.get(secrets::LAN_SECRET) {
+        Ok(Some(secret)) => RelayChoice::Http(secret),
+        Ok(None) => RelayChoice::None,
+        Err(error) => {
+            warn!(%error, "LAN secret unreadable; relaying disabled");
+            RelayChoice::None
+        }
+    }
+}
+
 /// Everything a command needs, built from the config on disk.
 fn build_deps(config: Config, dir: &Path) -> anyhow::Result<Deps> {
     let secrets = secrets::open_store(config.secrets.store, dir);
@@ -77,9 +104,9 @@ fn build_deps(config: Config, dir: &Path) -> anyhow::Result<Deps> {
             other => anyhow::bail!("backend {other:?} is not implemented"),
         }
     }
-    let relay: Arc<dyn switch::Relay> = match (&config.lan, secrets.get(secrets::LAN_SECRET)?) {
-        (Some(_), Some(secret)) => Arc::new(lan::HttpRelay::new(secret)),
-        _ => Arc::new(switch::NoRelay),
+    let relay: Arc<dyn switch::Relay> = match relay_for(config.lan.as_ref(), secrets.as_ref()) {
+        RelayChoice::Http(secret) => Arc::new(lan::HttpRelay::new(secret)),
+        RelayChoice::None => Arc::new(switch::NoRelay),
     };
     Ok(Deps {
         agent: Arc::new(openlogi::OpenLogi::new(
@@ -300,5 +327,91 @@ async fn main() -> ExitCode {
             eprintln!("error: {error:#}");
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::config::LanConfig;
+    use crate::secrets::SecretError;
+
+    enum Behavior {
+        Some(String),
+        None,
+        Err,
+        Panic,
+    }
+
+    /// A `SecretStore` whose `get` is scripted and counted, so tests can
+    /// assert the store was never touched at all.
+    struct FakeStore {
+        behavior: Behavior,
+        calls: AtomicUsize,
+    }
+
+    impl FakeStore {
+        fn new(behavior: Behavior) -> Self {
+            Self {
+                behavior,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl secrets::SecretStore for FakeStore {
+        fn get(&self, _key: &str) -> Result<Option<String>, SecretError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match &self.behavior {
+                Behavior::Some(value) => Ok(Some(value.clone())),
+                Behavior::None => Ok(None),
+                Behavior::Err => Err(SecretError::File(std::io::Error::other("boom"))),
+                Behavior::Panic => panic!("secret store touched with no [lan] section"),
+            }
+        }
+
+        fn set(&self, _key: &str, _value: &str) -> Result<(), SecretError> {
+            unimplemented!("not exercised by these tests")
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), SecretError> {
+            unimplemented!("not exercised by these tests")
+        }
+    }
+
+    fn lan() -> LanConfig {
+        LanConfig {
+            listen: "0.0.0.0:7391".into(),
+        }
+    }
+
+    #[test]
+    fn no_lan_section_is_norelay_without_touching_the_store() {
+        let store = FakeStore::new(Behavior::Panic);
+        assert_eq!(relay_for(None, &store), RelayChoice::None);
+        assert_eq!(store.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn lan_with_no_secret_stored_is_norelay() {
+        let store = FakeStore::new(Behavior::None);
+        assert_eq!(relay_for(Some(&lan()), &store), RelayChoice::None);
+    }
+
+    #[test]
+    fn a_keychain_error_degrades_to_norelay_instead_of_propagating() {
+        let store = FakeStore::new(Behavior::Err);
+        assert_eq!(relay_for(Some(&lan()), &store), RelayChoice::None);
+    }
+
+    #[test]
+    fn lan_with_a_stored_secret_is_http() {
+        let store = FakeStore::new(Behavior::Some("s3cret".into()));
+        assert_eq!(
+            relay_for(Some(&lan()), &store),
+            RelayChoice::Http("s3cret".into())
+        );
     }
 }
