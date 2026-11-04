@@ -1,6 +1,6 @@
 # PR 2 draft — feat/host-cli → AprilNEA/OpenLogi master (stacked on PR 1)
 
-Branch: `feat/host-cli` (10 commits on top of `feat/host-switch-actions` at `a4eea94e`; head `3b3aefe4`).
+Branch: `feat/host-cli` (16 commits on top of `feat/host-switch-actions` at `a4eea94e`; head `e9acf4e0`). Two `fix(…)` commits repair code introduced earlier on the same branch (`a12c9633`, `63cebb1b`); squash them into the commits they fix if you prefer a linear story before opening.
 Title: `feat: software-initiated host switching and openlogi host`
 Depends on: PR 1 (host switch actions). Open after PR 1 merges, or as a stacked PR with PR 1 as base.
 
@@ -13,17 +13,17 @@ Depends on: PR 1 (host switch actions). Open after PR 1 merges, or as a stacked 
 ## Changes
 
 - hidpp: `HostsInfoFeature::get_host_friendly_name` (function 3) and `HostFriendlyNameChunk`.
-- core (`hid`): wire DTOs `HostSlots`, `HostSlotInfo`, `HostSwitchOutcome`, `HostSwitchCommandError`; `HidppOperation::{ReadHostSlots, SwitchHost}` appended.
-- hid (`openlogi-device`): `read_host_slots` / `read_host_slots_on` — slot status via HostsInfo and friendly names assembled from 14-byte chunks (exactly `name_len` bytes, valid UTF-8 required; an unreadable slot degrades to `paired: None`, never an error). `HostSwitchStopReason::Requested(u8)`; typed `HostSwitchError::InvalidHost { host, host_count }` replaces the stringly out-of-range error.
-- ipc: `host_slots(route)` and `switch_host(keyboard, slot)` appended at the end of `Agent`; `PROTOCOL_VERSION` 29 → 30; wire goldens regenerated (new requests encode as variants `0x1a`/`0x1b`, hand-checked).
-- agent-core: the host-switch watcher accepts `HostSwitchCommand`s over a channel exposed as `SharedRuntime::host_switch_commands`. A command for a keyboard with an armed session stops it with `Requested`; the completion path runs the transition with trigger `command` and answers the reply. With no session it stops every armed session first (the exclusive receiver lease would otherwise deadlock against their shared leases), then runs the transition directly. Pending replies are keyed by session generation so a session swept by `stop_all`/`stop_unwanted` before its completion is matched can never strand a caller. `Busy` while device I/O is suspended or another command is pending.
+- core (`hid`): wire DTOs `HostSlots { current: Option<u8>, slots }`, `HostSlotInfo`, `HostSwitchOutcome`, `HostSwitchCommandError`; `HidppOperation::{ReadHostSlots, SwitchHost}` appended. `current` is `None` when the device does not report a slot (no `0` sentinel on the read side).
+- hid (`openlogi-device`): `read_host_slots_on` — slot status via HostsInfo and friendly names assembled from 14-byte chunks (exactly `name_len` bytes, trailing NULs trimmed, valid UTF-8 required; an unreadable slot degrades to `paired: None`, never an error). `HostSwitchStopReason::Requested(u8)`; typed `HostSwitchError::InvalidHost { host, host_count }` replaces the stringly out-of-range error.
+- ipc: `host_slots(route)` and `switch_host(keyboard, slot)` appended at the end of `Agent`; `PROTOCOL_VERSION` 29 → 30; `HOST_SWITCH_BUDGET` / `HOST_SLOTS_BUDGET` exported next to `OBSERVE_HOLD` so clients set a tarpc deadline above the agent's wait (tarpc's default 10 s deadline would otherwise cancel the handler mid-switch); wire goldens regenerated and every variant of the new enums pinned (new requests encode as `0x1a`/`0x1b`, hand-checked).
+- agent-core: the host-switch watcher accepts `HostSwitchCommand`s over a channel exposed as `SharedRuntime::host_switch_commands`. A command for a keyboard with an armed session stops it with `Requested`; the completion path runs the transition with trigger `command` and answers the reply. With no session it stops every armed session first (the exclusive receiver lease would otherwise deadlock against their shared leases), then runs the transition directly. Pending replies are keyed by session generation so a session swept by `stop_all`/`stop_unwanted` before its completion is matched can never strand a caller; a panicked session task or an abandoned request (closed reply) is answered or skipped rather than left pending. `Busy` while device I/O is suspended, pairing or another host transition holds exclusive access, or another command is pending.
 - agent: the receiver is handed to the watcher once at arming; `switch_host` converts the 1-based wire slot to the HID++ index, sends the command, and maps every outcome (send failure → `Busy`; dropped reply → `Io`; 20 s timeout → `Io`); `host_slots` reads through the shared channel like `read_dpi`. The mock agent scripts both.
 - cli: `openlogi host list [--json] [--device NAME]` and `openlogi host switch <1..=3> [--device NAME]`. Exit codes: 0 switched/already current, 2 refused (unpaired or invalid slot), 3 no online keyboard matched (both output modes), 4 no compatible agent, 1 busy/io. JSON: `{"keyboards":[{"name","route","online","current_slot","slots":[{"slot","paired","name"}]}]}`, offline keyboards carry `"online": false` and `"error"`.
 - docs: `USAGE.md` (the commands and exit codes); `CONFIGURATION.md` (`command` trigger now real).
 
 ## Testing
 
-Run on macOS 27 / arm64, rustc 1.98.1, at `63cebb1b` (code head; `3b3aefe4` adds docs only):
+Run on macOS 27 / arm64, rustc 1.98.1, at `63cebb1b` (workspace gate) and re-run per crate at `e9acf4e0` after review fixes (fmt/clippy clean, wire_format 15/15, core+device+agent-core+cli 769 tests, agent 26/26 single-threaded, mock round-trip repeated):
 
 - `cargo fmt --all -- --check` — clean
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
@@ -37,5 +37,13 @@ Run on macOS 27 / arm64, rustc 1.98.1, at `63cebb1b` (code head; `3b3aefe4` adds
 Hardware (MX Keys S for Mac + MX Master 3S, Bluetooth-direct, macOS):
 
 TO BE FILLED BY MICHAEL: `openlogi host list` shows three slots with the stored host names; `openlogi host switch 2` moves mouse and keyboard, the slot action's `/tmp/hs.txt` shows `OPENLOGI_TRIGGER=command`, exit 0; `openlogi host switch 1` while already on 1 prints "already on slot 1", fires nothing, exit 0; with slot 3 unpaired on the mouse, `openlogi host switch 3` exits 2 and nothing moves.
+
+## Known follow-ups (not in this PR; happy to take any of them as a follow-up or fold them in on request)
+
+- `host_slots`' rustdoc describes `HOST_SLOTS_BUDGET` as the agent's bound, but the handler itself has no timeout beyond the device layer's 5 s write budget plus the shared-lease wait; the constant is honest as a client deadline, the doc overstates the server side.
+- A session task that panics after sending its completion answers a parked command with an `Io` error while the transition still runs; one that panics before sending leaves the command pending. Both are panic-only paths.
+- The `Busy` variant's doc does not name the "watcher channel closed" cause the server maps to it.
+- Two doc strings are slightly stale after the review fixes (`KeyboardReport::current_slot` is also omitted when the device reports no slot; `assemble_name` keeps at most `name_len` bytes, minus trailing NULs).
+- An unknown route in `switch_host` still disarms and re-arms every session before failing `KeyboardNotFound`; the local socket already grants pairing and config authority, so this is not a new trust boundary.
 
 Fixes #N (none — new capability)

@@ -1,0 +1,167 @@
+//! `state.json`: what this machine last did and last saw, written atomically.
+
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tracing::warn;
+
+use crate::input::Input;
+
+/// Last observed state: target slot, switch time, input, and arrival time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
+pub struct State {
+    #[serde(default)]
+    pub last_target_slot: Option<u8>,
+    #[serde(default)]
+    pub last_switch_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_known_input: Option<Input>,
+    #[serde(default)]
+    pub last_arrive_at: Option<DateTime<Utc>>,
+}
+
+/// Manages persistent state in a `state.json` file.
+pub struct StateStore {
+    path: PathBuf,
+}
+
+impl StateStore {
+    /// Create a store at `dir/state.json`.
+    #[must_use]
+    pub fn in_dir(dir: &Path) -> Self {
+        Self {
+            path: dir.join("state.json"),
+        }
+    }
+
+    /// The saved state, or the default when the file is missing or unreadable.
+    #[must_use]
+    pub fn load(&self) -> State {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                warn!(path = %self.path.display(), %error, "state.json unreadable; starting fresh");
+                State::default()
+            }),
+            Err(error) => {
+                if error.kind() != ErrorKind::NotFound {
+                    warn!(path = %self.path.display(), %error, "state.json unreadable; starting fresh");
+                }
+                State::default()
+            }
+        }
+    }
+
+    /// Write `state` via a sibling temp file and rename, so a crash mid-write
+    /// never leaves a torn file. The temp name carries this process's pid so
+    /// a concurrent writer (the daemon refreshing while a hook switches)
+    /// never clobbers another writer's in-flight temp file.
+    pub fn save(&self, state: &State) -> std::io::Result<()> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let temp = self
+            .path
+            .with_extension(format!("json.{}.tmp", std::process::id()));
+        if let Err(error) = std::fs::write(&temp, serde_json::to_vec_pretty(state)?) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&temp, &self.path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Load, mutate, save; returns the saved state.
+    pub fn update(&self, f: impl FnOnce(&mut State)) -> std::io::Result<State> {
+        let mut state = self.load();
+        f(&mut state);
+        self.save(&state)?;
+        Ok(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_and_corrupt_files_read_as_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::in_dir(dir.path());
+        assert_eq!(store.load(), State::default());
+        std::fs::write(dir.path().join("state.json"), "{not json").unwrap();
+        assert_eq!(store.load(), State::default());
+    }
+
+    #[test]
+    fn update_persists_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::in_dir(dir.path());
+        let saved = store
+            .update(|state| {
+                state.last_target_slot = Some(2);
+                state.last_known_input = Some(Input::Hdmi3);
+            })
+            .unwrap();
+        assert_eq!(saved.last_target_slot, Some(2));
+        assert_eq!(store.load().last_known_input, Some(Input::Hdmi3));
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["state.json"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_rename_leaves_no_temp_file() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::in_dir(dir.path());
+        fs::create_dir(dir.path().join("state.json")).unwrap();
+        let result = store.save(&State::default());
+        assert!(result.is_err());
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
+        assert_eq!(leftovers, Vec::<String>::new());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_file_reads_as_default_without_panicking() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::in_dir(dir.path());
+        let state_file = dir.path().join("state.json");
+
+        fs::write(
+            &state_file,
+            serde_json::to_vec_pretty(&State::default()).unwrap(),
+        )
+        .unwrap();
+        let perms = fs::Permissions::from_mode(0o000);
+        fs::set_permissions(&state_file, perms).unwrap();
+
+        let loaded = store.load();
+        assert_eq!(loaded, State::default());
+
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&state_file, perms).unwrap();
+    }
+}

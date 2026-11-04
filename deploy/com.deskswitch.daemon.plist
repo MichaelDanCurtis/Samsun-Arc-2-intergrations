@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.deskswitch.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/deskswitch</string>
+    <string>daemon</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <!-- Only restart the daemon if it crashes; a daemon that exits cleanly (or
+       keeps exiting on a config error) should not be respawned every few
+       seconds — that would spam this log and hide the real problem. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key><true/>
+  </dict>
+  <!-- launchd does not expand "~" — replace it with your home directory
+       before installing this plist, e.g.:
+       sed -i '' "s#~/Library/Logs#$HOME/Library/Logs#g" com.deskswitch.daemon.plist -->
+  <key>StandardOutPath</key><string>~/Library/Logs/deskswitch.out.log</string>
+  <key>StandardErrorPath</key><string>~/Library/Logs/deskswitch.err.log</string>
+</dict>
+</plist>
